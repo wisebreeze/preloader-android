@@ -8,7 +8,7 @@ on:
       - '**.txt'
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   build:
@@ -17,14 +17,18 @@ jobs:
     strategy:
       matrix:
         abi: [arm64-v8a, armeabi-v7a]
-      fail-fast: false  # 一个失败不影响另一个
+      fail-fast: false
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
         submodules: recursive
-        fetch-depth: 1  # 只获取最新提交，减少时间
+        fetch-depth: 1
+
+    # 安装 ccache
+    - name: Install ccache
+      run: sudo apt-get update && sudo apt-get install -y ccache ninja-build
 
     - name: Setup Android NDK
       uses: nttld/setup-ndk@v1
@@ -41,23 +45,9 @@ jobs:
         path: |
           build/${{ matrix.abi }}/CMakeCache.txt
           build/${{ matrix.abi }}/CMakeFiles
-          build/${{ matrix.abi }}/**/*.o
-          build/${{ matrix.abi }}/**/*.a
-        key: ${{ runner.os }}-${{ matrix.abi }}-cmake-${{ hashFiles('CMakeLists.txt', 'src/**/*.cpp', 'src/**/*.h') }}
+        key: ${{ runner.os }}-${{ matrix.abi }}-cmake-${{ hashFiles('CMakeLists.txt') }}
         restore-keys: |
           ${{ runner.os }}-${{ matrix.abi }}-cmake-
-          ${{ runner.os }}-cmake-
-
-    - name: Cache Ninja build
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cache/ninja
-          build/${{ matrix.abi }}/.ninja_deps
-          build/${{ matrix.abi }}/.ninja_log
-        key: ${{ runner.os }}-${{ matrix.abi }}-ninja-${{ github.sha }}
-        restore-keys: |
-          ${{ runner.os }}-${{ matrix.abi }}-ninja-
 
     - name: Cache ccache
       uses: actions/cache@v4
@@ -75,21 +65,20 @@ jobs:
           -DANDROID_PLATFORM=android-24 \
           -DANDROID_STL=c++_shared \
           -G Ninja \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_BUILD_TYPE=Release
       env:
         CCACHE_DIR: ~/.ccache
-        CCACHE_MAXSIZE: 500M
 
     - name: Build
       run: |
         cmake --build build/${{ matrix.abi }} --config Release --parallel $(nproc)
+      env:
+        CCACHE_DIR: ~/.ccache
 
-    - name: Strip symbols (减少体积)
+    - name: Strip symbols
       run: |
         ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip \
-          --strip-unneeded build/${{ matrix.abi }}/libpreloader.so
+          --strip-unneeded build/${{ matrix.abi }}/libpreloader.so || true
 
     - name: Upload artifact - ${{ matrix.abi }}
       uses: actions/upload-artifact@v4
@@ -97,10 +86,9 @@ jobs:
         name: preloader-${{ matrix.abi }}
         path: build/${{ matrix.abi }}/libpreloader.so
         retention-days: 30
-        compression-level: 9
 
     - name: Upload headers artifact
-      if: matrix.abi == 'arm64-v8a'  # 只上传一次头文件
+      if: matrix.abi == 'arm64-v8a'
       uses: actions/upload-artifact@v4
       with:
         name: preloader-headers
@@ -109,32 +97,3 @@ jobs:
           src/pl/api/*.h
           src/pl/api/memory/*.h
         retention-days: 90
-
-  # 可选：创建 Release
-  create-release:
-    name: Create Release Package
-    needs: [build]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    
-    steps:
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: artifacts
-    
-    - name: Create release package
-      run: |
-        mkdir release-package
-        cp artifacts/preloader-arm64-v8a/libpreloader.so release-package/preloader-arm64-v8a.so
-        cp artifacts/preloader-armeabi-v7a/libpreloader.so release-package/preloader-armeabi-v7a.so
-        cp -r artifacts/preloader-headers/* release-package/
-        tar -czf preloader-release.tar.gz -C release-package .
-    
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: preloader-release.tar.gz
-        draft: false
-        prerelease: false
-        generate_release_notes: true
