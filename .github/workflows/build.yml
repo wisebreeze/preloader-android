@@ -26,21 +26,23 @@ jobs:
         submodules: recursive
         fetch-depth: 1
 
-    # 安装 ccache
-    - name: Install ccache
-      run: sudo apt-get update && sudo apt-get install -y ccache ninja-build
+    - name: Install build tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ninja-build
 
     - name: Setup Android NDK
-      uses: nttld/setup-ndk@v1
-      id: setup-ndk
+      uses: android-actions/setup-android@v3
       with:
-        ndk-version: r26c
-        add-to-path: false
-        local-cache: true
+        log-accept-android-sdk-license: true
+
+    - name: Set NDK path
+      run: |
+        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$(ls $ANDROID_HOME/ndk)" >> $GITHUB_ENV
+        echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$(ls $ANDROID_HOME/ndk)" >> $GITHUB_ENV
 
     - name: Cache CMake build
       uses: actions/cache@v4
-      id: cmake-cache
       with:
         path: |
           build/${{ matrix.abi }}/CMakeCache.txt
@@ -49,36 +51,24 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-${{ matrix.abi }}-cmake-
 
-    - name: Cache ccache
-      uses: actions/cache@v4
-      with:
-        path: ~/.ccache
-        key: ${{ runner.os }}-${{ matrix.abi }}-ccache-${{ github.sha }}
-        restore-keys: |
-          ${{ runner.os }}-${{ matrix.abi }}-ccache-
-
     - name: Configure CMake
       run: |
         cmake -B build/${{ matrix.abi }} \
-          -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
+          -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_ROOT}/build/cmake/android.toolchain.cmake \
           -DANDROID_ABI=${{ matrix.abi }} \
           -DANDROID_PLATFORM=android-24 \
           -DANDROID_STL=c++_shared \
           -G Ninja \
           -DCMAKE_BUILD_TYPE=Release
-      env:
-        CCACHE_DIR: ~/.ccache
 
     - name: Build
       run: |
         cmake --build build/${{ matrix.abi }} --config Release --parallel $(nproc)
-      env:
-        CCACHE_DIR: ~/.ccache
 
     - name: Strip symbols
       run: |
-        ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip \
-          --strip-unneeded build/${{ matrix.abi }}/libpreloader.so || true
+        ${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip \
+          --strip-unneeded build/${{ matrix.abi }}/libpreloader.so 2>/dev/null || true
 
     - name: Upload artifact - ${{ matrix.abi }}
       uses: actions/upload-artifact@v4
@@ -86,8 +76,9 @@ jobs:
         name: preloader-${{ matrix.abi }}
         path: build/${{ matrix.abi }}/libpreloader.so
         retention-days: 30
+        if-no-files-found: error
 
-    - name: Upload headers artifact
+    - name: Upload headers
       if: matrix.abi == 'arm64-v8a'
       uses: actions/upload-artifact@v4
       with:
@@ -97,3 +88,55 @@ jobs:
           src/pl/api/*.h
           src/pl/api/memory/*.h
         retention-days: 90
+
+  # Release job - 只在打 tag 时运行
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Prepare release package
+      run: |
+        mkdir -p release/lib release/include
+        
+        # 复制库文件
+        cp artifacts/preloader-arm64-v8a/libpreloader.so release/lib/preloader-arm64-v8a.so
+        cp artifacts/preloader-armeabi-v7a/libpreloader.so release/lib/preloader-armeabi-v7a.so
+        
+        # 复制头文件
+        cp -r artifacts/preloader-headers/* release/include/
+        
+        # 创建压缩包
+        cd release
+        tar -czf ../preloader-android-${{ github.ref_name }}.tar.gz .
+        cd ..
+        
+        # 也创建一个 zip 包（方便 Windows 用户）
+        cd release
+        zip -r ../preloader-android-${{ github.ref_name }}.zip .
+        cd ..
+        
+        # 计算 checksum
+        sha256sum preloader-android-${{ github.ref_name }}.tar.gz > preloader-android-${{ github.ref_name }}.tar.gz.sha256
+        sha256sum preloader-android-${{ github.ref_name }}.zip > preloader-android-${{ github.ref_name }}.zip.sha256
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          preloader-android-${{ github.ref_name }}.tar.gz
+          preloader-android-${{ github.ref_name }}.tar.gz.sha256
+          preloader-android-${{ github.ref_name }}.zip
+          preloader-android-${{ github.ref_name }}.zip.sha256
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
