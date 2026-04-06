@@ -20,123 +20,120 @@ jobs:
       fail-fast: false
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive
-        fetch-depth: 1
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-    - name: Install build tools
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y ninja-build
+      - name: Install ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
 
-    - name: Setup Android NDK
-      uses: android-actions/setup-android@v3
-      with:
-        log-accept-android-sdk-license: true
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26c
+          local-cache: true
 
-    - name: Set NDK path
-      run: |
-        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$(ls $ANDROID_HOME/ndk)" >> $GITHUB_ENV
-        echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$(ls $ANDROID_HOME/ndk)" >> $GITHUB_ENV
+      - name: Configure CMake
+        run: |
+          cmake -B build/${{ matrix.abi }} \
+            -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_PLATFORM=android-24 \
+            -DANDROID_STL=c++_shared \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release
 
-    - name: Cache CMake build
-      uses: actions/cache@v4
-      with:
-        path: |
-          build/${{ matrix.abi }}/CMakeCache.txt
-          build/${{ matrix.abi }}/CMakeFiles
-        key: ${{ runner.os }}-${{ matrix.abi }}-cmake-${{ hashFiles('CMakeLists.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-${{ matrix.abi }}-cmake-
+      - name: Build
+        run: cmake --build build/${{ matrix.abi }} --parallel $(nproc)
 
-    - name: Configure CMake
-      run: |
-        cmake -B build/${{ matrix.abi }} \
-          -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_ROOT}/build/cmake/android.toolchain.cmake \
-          -DANDROID_ABI=${{ matrix.abi }} \
-          -DANDROID_PLATFORM=android-24 \
-          -DANDROID_STL=c++_shared \
-          -G Ninja \
-          -DCMAKE_BUILD_TYPE=Release
+      - name: Strip symbols
+        run: |
+          ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip \
+            --strip-unneeded build/${{ matrix.abi }}/libpreloader.so 2>/dev/null || true
 
-    - name: Build
-      run: |
-        cmake --build build/${{ matrix.abi }} --config Release --parallel $(nproc)
+      - name: Upload library - ${{ matrix.abi }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: preloader-${{ matrix.abi }}
+          path: build/${{ matrix.abi }}/libpreloader.so
+          retention-days: 30
 
-    - name: Strip symbols
-      run: |
-        ${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip \
-          --strip-unneeded build/${{ matrix.abi }}/libpreloader.so 2>/dev/null || true
+      - name: Upload headers
+        if: matrix.abi == 'arm64-v8a'
+        uses: actions/upload-artifact@v4
+        with:
+          name: preloader-headers
+          path: |
+            src/pl/*.h
+            src/pl/api/*.h
+            src/pl/api/memory/*.h
+          retention-days: 90
 
-    - name: Upload artifact - ${{ matrix.abi }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: preloader-${{ matrix.abi }}
-        path: build/${{ matrix.abi }}/libpreloader.so
-        retention-days: 30
-        if-no-files-found: error
-
-    - name: Upload headers
-      if: matrix.abi == 'arm64-v8a'
-      uses: actions/upload-artifact@v4
-      with:
-        name: preloader-headers
-        path: |
-          src/pl/*.h
-          src/pl/api/*.h
-          src/pl/api/memory/*.h
-        retention-days: 90
-
-  # Release job - 只在打 tag 时运行
   release:
-    name: Create Release
+    name: Create Release Package
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     
     steps:
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: artifacts
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
-    - name: Prepare release package
-      run: |
-        mkdir -p release/lib release/include
-        
-        # 复制库文件
-        cp artifacts/preloader-arm64-v8a/libpreloader.so release/lib/preloader-arm64-v8a.so
-        cp artifacts/preloader-armeabi-v7a/libpreloader.so release/lib/preloader-armeabi-v7a.so
-        
-        # 复制头文件
-        cp -r artifacts/preloader-headers/* release/include/
-        
-        # 创建压缩包
-        cd release
-        tar -czf ../preloader-android-${{ github.ref_name }}.tar.gz .
-        cd ..
-        
-        # 也创建一个 zip 包（方便 Windows 用户）
-        cd release
-        zip -r ../preloader-android-${{ github.ref_name }}.zip .
-        cd ..
-        
-        # 计算 checksum
-        sha256sum preloader-android-${{ github.ref_name }}.tar.gz > preloader-android-${{ github.ref_name }}.tar.gz.sha256
-        sha256sum preloader-android-${{ github.ref_name }}.zip > preloader-android-${{ github.ref_name }}.zip.sha256
+      - name: Prepare release files
+        run: |
+          mkdir -p release/lib/arm64-v8a
+          mkdir -p release/lib/armeabi-v7a
+          mkdir -p release/include/pl/api/memory
+          
+          cp artifacts/preloader-arm64-v8a/libpreloader.so release/lib/arm64-v8a/
+          cp artifacts/preloader-armeabi-v7a/libpreloader.so release/lib/armeabi-v7a/
+          
+          cp artifacts/preloader-headers/*.h release/include/pl/ 2>/dev/null || true
+          cp artifacts/preloader-headers/api/*.h release/include/pl/api/ 2>/dev/null || true
+          cp artifacts/preloader-headers/api/memory/*.h release/include/pl/api/memory/ 2>/dev/null || true
+          
+          cat > release/README.md << 'EOF'
+          # Preloader Android Library
+          
+          ## 文件说明
+          - `lib/arm64-v8a/libpreloader.so` - ARM64 架构的动态库
+          - `lib/armeabi-v7a/libpreloader.so` - ARMv7 架构的动态库
+          - `include/` - C++ 头文件
+          
+          ## 使用方法
+          1. 根据设备架构选择对应的 .so 文件
+          2. 将头文件包含到你的项目中
+          3. 链接 preloader 库
+          EOF
+          
+          cd release
+          tar -czf ../preloader-android-${{ github.ref_name }}.tar.gz .
+          zip -r ../preloader-android-${{ github.ref_name }}.zip .
+          cd ..
+          
+          sha256sum preloader-android-${{ github.ref_name }}.tar.gz > preloader-android-${{ github.ref_name }}.tar.gz.sha256
+          sha256sum preloader-android-${{ github.ref_name }}.zip > preloader-android-${{ github.ref_name }}.zip.sha256
+          
+          cp artifacts/preloader-arm64-v8a/libpreloader.so preloader-arm64-v8a-${{ github.ref_name }}.so
+          cp artifacts/preloader-armeabi-v7a/libpreloader.so preloader-armeabi-v7a-${{ github.ref_name }}.so
 
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          preloader-android-${{ github.ref_name }}.tar.gz
-          preloader-android-${{ github.ref_name }}.tar.gz.sha256
-          preloader-android-${{ github.ref_name }}.zip
-          preloader-android-${{ github.ref_name }}.zip.sha256
-        draft: false
-        prerelease: false
-        generate_release_notes: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            preloader-android-${{ github.ref_name }}.tar.gz
+            preloader-android-${{ github.ref_name }}.tar.gz.sha256
+            preloader-android-${{ github.ref_name }}.zip
+            preloader-android-${{ github.ref_name }}.zip.sha256
+            preloader-arm64-v8a-${{ github.ref_name }}.so
+            preloader-armeabi-v7a-${{ github.ref_name }}.so
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
