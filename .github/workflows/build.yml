@@ -1,13 +1,6 @@
 name: Build and Release Preloader
 
 on:
-  push:
-    branches: [ main, master ]
-    paths:
-      - 'src/**'
-      - 'CMakeLists.txt'
-      - 'lib/**'
-      - '.github/workflows/build.yml'
   workflow_dispatch:
     inputs:
       version_type:
