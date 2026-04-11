@@ -1,0 +1,260 @@
+name: Build and Release Preloader
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'src/**'
+      - 'CMakeLists.txt'
+      - 'lib/**'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: 'Version increment type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+jobs:
+  build:
+    name: Build for ${{ matrix.abi }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        abi:
+          - armeabi-v7a
+          - arm64-v8a
+      fail-fast: false
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27c
+      
+      - name: Configure CMake for ${{ matrix.abi }}
+        run: |
+          cmake -B build/${{ matrix.abi }} \
+            -DCMAKE_TOOLCHAIN_FILE=${{ steps.ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_PLATFORM=android-24 \
+            -DANDROID_STL=c++_shared \
+            -DCMAKE_BUILD_TYPE=Release
+      
+      - name: Build for ${{ matrix.abi }}
+        run: cmake --build build/${{ matrix.abi }} --target preloader -j $(nproc)
+      
+      - name: Prepare release files for ${{ matrix.abi }}
+        run: |
+          mkdir -p release_output/${{ matrix.abi }}
+          find build/${{ matrix.abi }} -name "libpreloader.so" -exec cp {} release_output/${{ matrix.abi }}/ \;
+          echo "Built ${{ matrix.abi }}:"
+          ls -la release_output/${{ matrix.abi }}/
+      
+      - name: Upload artifact for ${{ matrix.abi }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: preloader-${{ matrix.abi }}
+          path: release_output/${{ matrix.abi }}/libpreloader.so
+          if-no-files-found: error
+
+  package-headers:
+    name: Package Headers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Prepare headers package
+        run: |
+          mkdir -p preloader-headers/pl/api/memory
+          cp -r src/pl/*.h preloader-headers/pl/
+          cp -r src/pl/api/*.h preloader-headers/pl/api/
+          cp -r src/pl/api/memory/*.h preloader-headers/pl/api/memory/
+          cd preloader-headers
+          zip -r ../preloader-headers.zip .
+          cd ..
+          ls -la preloader-headers.zip
+      
+      - name: Upload headers artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: preloader-headers
+          path: preloader-headers.zip
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build, package-headers]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    permissions:
+      contents: write
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      
+      - name: Organize release files
+        run: |
+          mkdir -p release_package/lib/arm64-v8a
+          mkdir -p release_package/lib/armeabi-v7a
+          mkdir -p release_package/include
+          
+          # 复制 SO 文件
+          cp artifacts/preloader-arm64-v8a/libpreloader.so release_package/lib/arm64-v8a/
+          cp artifacts/preloader-armeabi-v7a/libpreloader.so release_package/lib/armeabi-v7a/
+          
+          # 复制 headers
+          unzip artifacts/preloader-headers/preloader-headers.zip -d release_package/include/
+          
+          # 创建压缩包
+          cd release_package
+          zip -r ../preloader-release.zip .
+          cd ..
+          ls -la preloader-release.zip
+      
+      - name: Get current version
+        id: current_version
+        run: |
+          latest_tag=$(git tag -l "v*" | sort -V | tail -n 1)
+          if [ -z "$latest_tag" ]; then
+            echo "version=1.0.0" >> $GITHUB_OUTPUT
+          else
+            echo "version=${latest_tag#v}" >> $GITHUB_OUTPUT
+          fi
+          echo "latest_tag=$latest_tag" >> $GITHUB_OUTPUT
+      
+      - name: Bump version
+        id: bumped_version
+        run: |
+          current=${{ steps.current_version.outputs.version }}
+          
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            type="${{ github.event.inputs.version_type }}"
+          else
+            type="patch"
+          fi
+          
+          IFS='.' read -r major minor patch <<< "$current"
+          
+          case "$type" in
+            major)
+              major=$((major + 1))
+              minor=0
+              patch=0
+              ;;
+            minor)
+              minor=$((minor + 1))
+              patch=0
+              ;;
+            patch)
+              patch=$((patch + 1))
+              ;;
+          esac
+          
+          new_version="$major.$minor.$patch"
+          echo "new_version=$new_version" >> $GITHUB_OUTPUT
+          echo "new_tag=v$new_version" >> $GITHUB_OUTPUT
+      
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          prev_tag=${{ steps.current_version.outputs.latest_tag }}
+          if [ -z "$prev_tag" ]; then
+            commits_log=$(git log --oneline --pretty=format:"- %s" | head -30)
+          else
+            commits_log=$(git log --oneline "$prev_tag..HEAD" --pretty=format:"- %s")
+          fi
+          
+          if [ -z "$commits_log" ]; then
+            commits_log="- No new commits"
+          fi
+          
+          cat << 'EOF' > release_notes.md
+          ## Preloader for Minecraft Bedrock Edition
+          
+          A modding preloader for Minecraft BE - core library for mod loading and hooking.
+          
+          ### 📦 Downloads
+          
+          | Architecture | File |
+              |-------------|------|
+          | ARM64 (arm64-v8a) | `lib/arm64-v8a/libpreloader.so` |
+          | ARM32 (armeabi-v7a) | `lib/armeabi-v7a/libpreloader.so` |
+          
+          ### 📁 Package Contents
+          - `lib/` - Native libraries for both ARM architectures
+          - `include/` - C++ headers for mod development
+          
+          ### 🔧 Build Configuration
+          - **C++ Standard**: C++20
+          - **Android API**: 24 (Android 7.0+)
+          - **NDK Version**: r27c
+          - **Dependencies**: nlohmann/json, GlossHook
+          
+          ### 📝 Changes in this release
+          
+          EOF
+          
+          echo "$commits_log" >> release_notes.md
+          
+          cat >> release_notes.md << 'EOF'
+          
+          ### 🚀 Usage
+          
+          Add to your `CMakeLists.txt`:
+          ```cmake
+          target_link_libraries(your_mod preloader)
+          ```
+          
+          Include headers:
+          ```cpp
+          #include <pl/Mod.h>
+          #include <pl/Hook.h>
+          ```
+          
+          ### ⚠️ Requirements
+          - Minecraft Bedrock Edition
+          - Android NDK r27c+
+          - CMake 3.22+
+          
+          *Automated release via GitHub Actions*
+          EOF
+          
+          echo "notes_file=release_notes.md" >> $GITHUB_OUTPUT
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.bumped_version.outputs.new_tag }}
+          name: "Preloader v${{ steps.bumped_version.outputs.new_version }}"
+          body_path: ${{ steps.release_notes.outputs.notes_file }}
+          files: preloader-release.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Update version file
+        run: |
+          echo "${{ steps.bumped_version.outputs.new_version }}" > VERSION
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add VERSION 2>/dev/null || true
+          git commit -m "chore: bump version to ${{ steps.bumped_version.outputs.new_version }}" || true
+          git push origin HEAD:${{ github.ref_name }} || true
