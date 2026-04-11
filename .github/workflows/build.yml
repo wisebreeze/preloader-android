@@ -54,18 +54,18 @@ jobs:
       - name: Build for ${{ matrix.abi }}
         run: cmake --build build/${{ matrix.abi }} --target preloader -j $(nproc)
       
-      - name: Prepare release files for ${{ matrix.abi }}
+      - name: Prepare SO file for ${{ matrix.abi }}
         run: |
-          mkdir -p release_output/${{ matrix.abi }}
-          find build/${{ matrix.abi }} -name "libpreloader.so" -exec cp {} release_output/${{ matrix.abi }}/ \;
+          mkdir -p release_output
+          find build/${{ matrix.abi }} -name "libpreloader.so" -exec cp {} release_output/libpreloader-${{ matrix.abi }}.so \;
           echo "Built ${{ matrix.abi }}:"
-          ls -la release_output/${{ matrix.abi }}/
+          ls -la release_output/
       
-      - name: Upload artifact for ${{ matrix.abi }}
+      - name: Upload SO for ${{ matrix.abi }}
         uses: actions/upload-artifact@v4
         with:
-          name: preloader-${{ matrix.abi }}
-          path: release_output/${{ matrix.abi }}/libpreloader.so
+          name: libpreloader-${{ matrix.abi }}
+          path: release_output/libpreloader-${{ matrix.abi }}.so
           if-no-files-found: error
 
   package-headers:
@@ -77,9 +77,9 @@ jobs:
       - name: Prepare headers package
         run: |
           mkdir -p preloader-headers/pl/api/memory
-          cp -r src/pl/*.h preloader-headers/pl/
-          cp -r src/pl/api/*.h preloader-headers/pl/api/
-          cp -r src/pl/api/memory/*.h preloader-headers/pl/api/memory/
+          cp -r src/pl/*.h preloader-headers/pl/ 2>/dev/null || true
+          cp -r src/pl/api/*.h preloader-headers/pl/api/ 2>/dev/null || true
+          cp -r src/pl/api/memory/*.h preloader-headers/pl/api/memory/ 2>/dev/null || true
           cd preloader-headers
           zip -r ../preloader-headers.zip .
           cd ..
@@ -104,29 +104,33 @@ jobs:
         with:
           fetch-depth: 0
       
-      - name: Download all artifacts
+      - name: Download all SO artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
       
+      - name: List downloaded files
+        run: |
+          echo "Downloaded artifacts:"
+          find artifacts -type f
+      
       - name: Organize release files
         run: |
-          mkdir -p release_package/lib/arm64-v8a
-          mkdir -p release_package/lib/armeabi-v7a
-          mkdir -p release_package/include
+          # 创建临时目录存放所有需要上传的文件
+          mkdir -p release_assets
           
-          # 复制 SO 文件
-          cp artifacts/preloader-arm64-v8a/libpreloader.so release_package/lib/arm64-v8a/
-          cp artifacts/preloader-armeabi-v7a/libpreloader.so release_package/lib/armeabi-v7a/
+          # 复制 SO 文件（重命名为标准名称）
+          cp artifacts/libpreloader-armeabi-v7a/libpreloader-armeabi-v7a.so release_assets/libpreloader-armeabi-v7a.so 2>/dev/null || \
+          cp artifacts/libpreloader-armeabi-v7a/*.so release_assets/libpreloader-armeabi-v7a.so 2>/dev/null || true
           
-          # 复制 headers
-          unzip artifacts/preloader-headers/preloader-headers.zip -d release_package/include/
+          cp artifacts/libpreloader-arm64-v8a/libpreloader-arm64-v8a.so release_assets/libpreloader-arm64-v8a.so 2>/dev/null || \
+          cp artifacts/libpreloader-arm64-v8a/*.so release_assets/libpreloader-arm64-v8a.so 2>/dev/null || true
           
-          # 创建压缩包
-          cd release_package
-          zip -r ../preloader-release.zip .
-          cd ..
-          ls -la preloader-release.zip
+          # 复制 headers zip
+          cp artifacts/preloader-headers/preloader-headers.zip release_assets/ 2>/dev/null || true
+          
+          echo "Release assets:"
+          ls -la release_assets/
       
       - name: Get current version
         id: current_version
@@ -193,13 +197,10 @@ jobs:
           ### 📦 Downloads
           
           | Architecture | File |
-              |-------------|------|
-          | ARM64 (arm64-v8a) | `lib/arm64-v8a/libpreloader.so` |
-          | ARM32 (armeabi-v7a) | `lib/armeabi-v7a/libpreloader.so` |
-          
-          ### 📁 Package Contents
-          - `lib/` - Native libraries for both ARM architectures
-          - `include/` - C++ headers for mod development
+          |-------------|------|
+          | ARM64 (arm64-v8a) | libpreloader-arm64-v8a.so |
+          | ARM32 (armeabi-v7a) | libpreloader-armeabi-v7a.so |
+          | Headers | preloader-headers.zip |
           
           ### 🔧 Build Configuration
           - **C++ Standard**: C++20
@@ -244,7 +245,11 @@ jobs:
           tag_name: ${{ steps.bumped_version.outputs.new_tag }}
           name: "Preloader v${{ steps.bumped_version.outputs.new_version }}"
           body_path: ${{ steps.release_notes.outputs.notes_file }}
-          files: preloader-release.zip
+          files: |
+            release_assets/libpreloader-armeabi-v7a.so
+            release_assets/libpreloader-arm64-v8a.so
+            release_assets/preloader-headers.zip
+          fail_on_unmatched_files: false
           draft: false
           prerelease: false
         env:
