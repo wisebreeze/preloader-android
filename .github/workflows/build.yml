@@ -19,28 +19,33 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Set up JDK
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: |
-            ndk;27.0.12077973
-            cmake;3.22.1
-
-      - name: Configure NDK & CMake paths
+      - name: Detect NDK & CMake
         id: sdk-paths
         run: |
-          ANDROID_HOME="$ANDROID_SDK_ROOT"
-          NDK_VERSION=$(ls "$ANDROID_HOME/ndk" | head -n1)
-          echo "ndk_path=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_OUTPUT"
-          CMAKE_VERSION=$(ls "$ANDROID_HOME/cmake" | head -n1)
-          echo "cmake_path=$ANDROID_HOME/cmake/$CMAKE_VERSION/bin/cmake" >> "$GITHUB_OUTPUT"
-          echo "Ninja found at: $ANDROID_HOME/cmake/$CMAKE_VERSION/bin/ninja"
+          # ubuntu-latest ships Android SDK at $ANDROID_HOME (== $ANDROID_SDK_ROOT)
+          # with a pre-installed NDK and CMake. Detect the versions actually
+          # present instead of pinning a specific one that may not be cached.
+          ANDROID_HOME="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          echo "android_home=$ANDROID_HOME" >> "$GITHUB_OUTPUT"
+
+          NDK_DIR=$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | head -n1)
+          if [ -z "$NDK_DIR" ]; then
+            echo "::error::No NDK found under $ANDROID_HOME/ndk"
+            exit 1
+          fi
+          echo "ndk_path=$NDK_DIR" >> "$GITHUB_OUTPUT"
+          echo "Using NDK: $NDK_DIR"
+
+          CMAKE_BIN=$(ls "$ANDROID_HOME"/cmake/*/bin/cmake 2>/dev/null | head -n1)
+          NINJA_BIN=$(ls "$ANDROID_HOME"/cmake/*/bin/ninja 2>/dev/null | head -n1)
+          if [ -z "$CMAKE_BIN" ] || [ -z "$NINJA_BIN" ]; then
+            echo "::error::No CMake/Ninja found under $ANDROID_HOME/cmake"
+            exit 1
+          fi
+          echo "cmake_path=$CMAKE_BIN" >> "$GITHUB_OUTPUT"
+          echo "ninja_path=$NINJA_BIN" >> "$GITHUB_OUTPUT"
+          echo "Using CMake: $CMAKE_BIN"
+          echo "Using Ninja: $NINJA_BIN"
 
       - name: Configure CMake (arm64-v8a)
         run: |
@@ -50,11 +55,11 @@ jobs:
             -B build/arm64-v8a \
             -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE=${{ steps.sdk-paths.outputs.ndk_path }}/build/cmake/android.toolchain.cmake \
+            -DCMAKE_MAKE_PROGRAM=${{ steps.sdk-paths.outputs.ninja_path }} \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-26 \
             -DANDROID_STL=c++_shared \
-            -DCMAKE_BUILD_TYPE=$CMAKE_BUILD_TYPE \
-            -DCMAKE_MAKE_PROGRAM=$ANDROID_SDK_ROOT/cmake/$(ls $ANDROID_SDK_ROOT/cmake | head -n1)/bin/ninja
+            -DCMAKE_BUILD_TYPE=$CMAKE_BUILD_TYPE
 
       - name: Build (arm64-v8a)
         run: |
