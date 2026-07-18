@@ -89,6 +89,7 @@ install(FILES
         src/pl/cpp/Config.hpp
         src/pl/cpp/Hook.hpp
         src/pl/cpp/Mod.hpp
+        src/pl/cpp/ModContext.hpp
         src/pl/cpp/Patch.hpp
         src/pl/cpp/PreloaderInput.hpp
         src/pl/cpp/Signature.hpp
