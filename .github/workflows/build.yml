@@ -1,0 +1,84 @@
+name: Build Native Library
+
+on:
+  push:
+    branches: [main, 'feat/**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CMAKE_BUILD_TYPE: RelWithDebInfo
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: |
+            ndk;27.0.12077973
+            cmake;3.22.1
+
+      - name: Configure NDK & CMake paths
+        id: sdk-paths
+        run: |
+          ANDROID_HOME="$ANDROID_SDK_ROOT"
+          NDK_VERSION=$(ls "$ANDROID_HOME/ndk" | head -n1)
+          echo "ndk_path=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_OUTPUT"
+          CMAKE_VERSION=$(ls "$ANDROID_HOME/cmake" | head -n1)
+          echo "cmake_path=$ANDROID_HOME/cmake/$CMAKE_VERSION/bin/cmake" >> "$GITHUB_OUTPUT"
+          echo "Ninja found at: $ANDROID_HOME/cmake/$CMAKE_VERSION/bin/ninja"
+
+      - name: Configure CMake (arm64-v8a)
+        run: |
+          mkdir -p build/arm64-v8a
+          ${{ steps.sdk-paths.outputs.cmake_path }} \
+            -S . \
+            -B build/arm64-v8a \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=${{ steps.sdk-paths.outputs.ndk_path }}/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26 \
+            -DANDROID_STL=c++_shared \
+            -DCMAKE_BUILD_TYPE=$CMAKE_BUILD_TYPE \
+            -DCMAKE_MAKE_PROGRAM=$ANDROID_SDK_ROOT/cmake/$(ls $ANDROID_SDK_ROOT/cmake | head -n1)/bin/ninja
+
+      - name: Build (arm64-v8a)
+        run: |
+          ${{ steps.sdk-paths.outputs.cmake_path }} \
+            --build build/arm64-v8a \
+            --target preloader \
+            --config $CMAKE_BUILD_TYPE \
+            -j$(nproc)
+
+      - name: Stage artifacts
+        run: |
+          mkdir -p artifact/arm64-v8a
+          cp build/arm64-v8a/libpreloader.so artifact/arm64-v8a/
+          # CMake install collects the public headers
+          ${{ steps.sdk-paths.outputs.cmake_path }} \
+            --install build/arm64-v8a \
+            --prefix artifact \
+            --config $CMAKE_BUILD_TYPE || true
+          ls -lh artifact/arm64-v8a/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: libpreloader-arm64-v8a
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 30
