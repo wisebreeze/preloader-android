@@ -55,11 +55,20 @@ FetchContent_MakeAvailable(nlohmann_json boost_pfr magic_enum fmt)
 # resolved from libpreloader.so (loaded with RTLD_GLOBAL). The preloader
 # compiles with -fvisibility=hidden, so we must force fmt's own symbols
 # to default visibility so they appear in the dynamic symbol table.
+#
+# FMT_USE_CONSTEVAL=0 disables fmt's consteval format-string checks:
+# NDK r29's clang (based on clang 21) has a bug where consteval calls
+# inside FMT_STRING fail with "not a constant expression" even for
+# trivially constant format strings like "{}{}". Falling back to
+# constexpr works around the compiler bug without losing runtime
+# functionality.
 if(TARGET fmt)
   set_target_properties(fmt PROPERTIES
           CXX_VISIBILITY_PRESET default
           VISIBILITY_INLINES_HIDDEN OFF)
-  target_compile_definitions(fmt PRIVATE FMT_LIB_EXPORT)
+  target_compile_definitions(fmt PRIVATE
+          FMT_LIB_EXPORT
+          FMT_USE_CONSTEVAL=0)
   target_compile_options(fmt PRIVATE -fvisibility=default)
 endif()
 
