@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(PRELOADER_SOURCES
         src/pl/PreLoader.cpp
         src/pl/Mod.cpp
+        src/pl/FmtExport.cpp
         src/pl/internal/ModManager.cpp
         src/pl/memory/Hook.cpp
         src/pl/memory/Patch.cpp
@@ -59,6 +60,7 @@ if(TARGET fmt)
           CXX_VISIBILITY_PRESET default
           VISIBILITY_INLINES_HIDDEN OFF)
   target_compile_definitions(fmt PRIVATE FMT_LIB_EXPORT)
+  target_compile_options(fmt PRIVATE -fvisibility=default)
 endif()
 
 find_library(log-lib log)
