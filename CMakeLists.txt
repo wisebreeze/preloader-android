@@ -49,6 +49,18 @@ set(FMT_TEST OFF CACHE BOOL "Disable fmt tests" FORCE)
 set(FMT_INSTALL OFF CACHE BOOL "Disable fmt install rules" FORCE)
 FetchContent_MakeAvailable(nlohmann_json boost_pfr magic_enum fmt)
 
+# fmt is statically linked into libpreloader.so, but native mods built
+# against the 0.2.0+ SDK import fmt::v11::vformat and expect it to be
+# resolved from libpreloader.so (loaded with RTLD_GLOBAL). The preloader
+# compiles with -fvisibility=hidden, so we must force fmt's own symbols
+# to default visibility so they appear in the dynamic symbol table.
+if(TARGET fmt)
+  set_target_properties(fmt PROPERTIES
+          CXX_VISIBILITY_PRESET default
+          VISIBILITY_INLINES_HIDDEN OFF)
+  target_compile_definitions(fmt PRIVATE FMT_LIB_EXPORT)
+endif()
+
 find_library(log-lib log)
 find_library(android-lib android)
 find_library(egl-lib EGL)
@@ -106,6 +118,10 @@ install(FILES
         src/pl/cpp/Signature.hpp
         src/pl/cpp/Types.hpp
         DESTINATION include/pl/cpp)
+
+install(FILES
+        src/pl/memory/Hook.hpp
+        DESTINATION include/pl/memory)
 
 install(FILES
         src/pl/cpp/mod/Mod.hpp

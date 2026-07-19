@@ -5,6 +5,7 @@
 
 #include "pl/Gloss.h"
 #include "pl/c/Hook.h"
+#include "pl/memory/Hook.hpp"
 
 namespace pl::hook {
 
@@ -141,6 +142,20 @@ bool unhook(PLFuncPtr target, PLFuncPtr detour) {
 }
 
 } // namespace pl::hook
+
+namespace pl::memory {
+
+int hook(void *target, void *detour, void **originalFunc,
+         HookPriority priority) {
+  return pl::hook::hook(target, detour, originalFunc,
+                        static_cast<int>(priority));
+}
+
+bool unhook(void *target, void *detour) {
+  return pl::hook::unhook(target, detour);
+}
+
+} // namespace pl::memory
 
 extern "C" {
 
