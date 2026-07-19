@@ -2,18 +2,17 @@
 
 /**
  * @file ModContext.hpp
- * @brief C++ mod lifecycle registration API backported from preloader 0.2.0.
+ * @brief C++ mod lifecycle registration API (backported from 0.2.1).
  *
- * Some native mods (e.g. LeviMap) are built against the 0.2.0+ SDK and only
- * export PLGetModRegistration, returning a pl::mod::ModRegistration* with
- * type-erased load/enable/disable/unload callbacks that receive a
- * ModContext&. The preloader pinned at 95a40b1 only knew about PLMod_Load /
- * LeviMod_Load, so those mods were dlopen-ed but their lifecycle was never
- * invoked and the mod silently did nothing.
+ * Provides the pl::mod::NativeMod / ModContext / ModRegistration /
+ * ScopedCurrentMod definitions that native mods built against the 0.2.0+
+ * SDK expect. The preloader at 95a40b1 only shipped the legacy
+ * pl::cpp::mod::NativeMod (shared_ptr-based, different ABI), so mods
+ * importing pl::mod::NativeMod::current() failed to resolve symbols.
  *
- * This header provides the minimal ModInfo / ModContext / ModRegistration
- * definitions needed to dispatch those callbacks, using the pl::log::Logger
- * that already exists in this preloader checkout.
+ * ABI is kept byte-compatible with upstream 0.2.1 (f45fc42) so that mods
+ * compiled against the 0.2.0+ SDK can dlopen and dispatch lifecycle
+ * callbacks without recompilation.
  */
 
 #include <filesystem>
@@ -83,6 +82,105 @@ private:
   }
 };
 
+/**
+ * @brief Runtime mod object for the currently executing native mod.
+ *
+ * Member layout MUST match upstream 0.2.1 (include/pl/Mod.hpp) so that
+ * mods compiled against the 0.2.0+ SDK can access getId()/getLogger()/
+ * getDataDir() etc. through the pointer returned by current().
+ */
+class NativeMod {
+public:
+  enum class State {
+    Unloaded,
+    Loaded,
+    Enabled,
+  };
+
+  NativeMod(JavaVM *javaVm, ModInfo info)
+      : mJavaVm(javaVm), mInfo(std::move(info)),
+        mDataDir(mInfo.modRootPath / "data"),
+        mConfigDir(mInfo.modRootPath / "config"),
+        mResourceDir(mInfo.modRootPath / "resources"),
+        mLogger(&pl::log::Logger::getOrCreate(mInfo.displayName.empty()
+                                                  ? fallbackName(mInfo.id)
+                                                  : mInfo.displayName)) {}
+
+  [[nodiscard]] State getState() const noexcept { return mState; }
+  [[nodiscard]] bool isEnabled() const noexcept {
+    return mState == State::Enabled;
+  }
+  [[nodiscard]] bool isLoaded() const noexcept {
+    return mState == State::Loaded;
+  }
+  [[nodiscard]] bool isUnloaded() const noexcept {
+    return mState == State::Unloaded;
+  }
+  [[nodiscard]] bool isDisabled() const noexcept {
+    return mState != State::Enabled;
+  }
+
+  [[nodiscard]] const std::string &getId() const noexcept { return mInfo.id; }
+  [[nodiscard]] const std::string &getName() const noexcept {
+    return mInfo.displayName;
+  }
+  [[nodiscard]] const std::string &getAuthor() const noexcept {
+    return mInfo.author;
+  }
+  [[nodiscard]] const std::string &getVersion() const noexcept {
+    return mInfo.version;
+  }
+  [[nodiscard]] const std::filesystem::path &getEntryPath() const noexcept {
+    return mInfo.entryPath;
+  }
+  [[nodiscard]] const std::string &getEntryFileName() const noexcept {
+    return mInfo.entryFileName;
+  }
+  [[nodiscard]] const std::filesystem::path &getIconPath() const noexcept {
+    return mInfo.iconPath;
+  }
+  [[nodiscard]] const std::filesystem::path &getModDir() const noexcept {
+    return mInfo.modRootPath;
+  }
+  [[nodiscard]] const std::filesystem::path &getDataDir() const noexcept {
+    return mDataDir;
+  }
+  [[nodiscard]] const std::filesystem::path &getConfigDir() const noexcept {
+    return mConfigDir;
+  }
+  [[nodiscard]] const std::filesystem::path &getResourceDir() const noexcept {
+    return mResourceDir;
+  }
+  [[nodiscard]] const std::filesystem::path &getManifestPath() const noexcept {
+    return mInfo.manifestPath;
+  }
+  [[nodiscard]] const std::filesystem::path &getLibraryPath() const noexcept {
+    return mInfo.libraryPath;
+  }
+  [[nodiscard]] JavaVM *getJavaVM() const noexcept { return mJavaVm; }
+  [[nodiscard]] pl::log::Logger &getLogger() const noexcept { return *mLogger; }
+
+  /**
+   * @brief Returns the mod currently being registered or executing lifecycle.
+   */
+  [[nodiscard]] PL_SHARED_EXPORT static NativeMod *current() noexcept;
+
+  void setState(State state) noexcept { mState = state; }
+
+private:
+  JavaVM *mJavaVm{};
+  ModInfo mInfo;
+  std::filesystem::path mDataDir;
+  std::filesystem::path mConfigDir;
+  std::filesystem::path mResourceDir;
+  pl::log::Logger *mLogger{};
+  State mState{State::Unloaded};
+
+  [[nodiscard]] static std::string fallbackName(const std::string &id) {
+    return id.empty() ? "LeviMod" : id;
+  }
+};
+
 using LifecycleFunction = bool (*)(void *instance, ModContext &context);
 
 /**
@@ -95,6 +193,25 @@ struct ModRegistration {
   LifecycleFunction disable{};
   LifecycleFunction unload{};
 };
+
+namespace detail {
+
+/**
+ * @brief RAII guard that sets the "current" mod for the duration of a
+ *        lifecycle callback, restoring the previous value on destruction.
+ */
+class ScopedCurrentMod {
+public:
+  explicit ScopedCurrentMod(NativeMod *current) noexcept;
+  ScopedCurrentMod(const ScopedCurrentMod &) = delete;
+  ScopedCurrentMod &operator=(const ScopedCurrentMod &) = delete;
+  ~ScopedCurrentMod();
+
+private:
+  NativeMod *mPrevious{};
+};
+
+} // namespace detail
 
 } // namespace pl::mod
 

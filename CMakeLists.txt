@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(PRELOADER_SOURCES
         src/pl/PreLoader.cpp
+        src/pl/Mod.cpp
         src/pl/internal/ModManager.cpp
         src/pl/memory/Hook.cpp
         src/pl/memory/Patch.cpp
@@ -38,7 +39,15 @@ FetchContent_Declare(
         GIT_REPOSITORY https://github.com/Neargye/magic_enum.git
         GIT_TAG v0.9.7
 )
-FetchContent_MakeAvailable(nlohmann_json boost_pfr magic_enum)
+FetchContent_Declare(
+        fmt
+        GIT_REPOSITORY https://github.com/fmtlib/fmt.git
+        GIT_TAG 11.0.2
+)
+set(FMT_DOC OFF CACHE BOOL "Disable fmt docs" FORCE)
+set(FMT_TEST OFF CACHE BOOL "Disable fmt tests" FORCE)
+set(FMT_INSTALL OFF CACHE BOOL "Disable fmt install rules" FORCE)
+FetchContent_MakeAvailable(nlohmann_json boost_pfr magic_enum fmt)
 
 find_library(log-lib log)
 find_library(android-lib android)
@@ -63,6 +72,7 @@ target_link_libraries(preloader
         nlohmann_json::nlohmann_json
         Boost::pfr
         magic_enum::magic_enum
+        fmt::fmt
 )
 
 install(TARGETS preloader
@@ -73,6 +83,7 @@ install(TARGETS preloader
 install(FILES
         src/pl/Gloss.h
         src/pl/Logger.h
+        src/pl/Input.hpp
         DESTINATION include/pl)
 
 install(FILES

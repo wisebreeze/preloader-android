@@ -58,6 +58,7 @@ struct LoadedModEntry {
   PLModLifecycleFunc unload{};
   pl::mod::ModRegistration *cppRegistration{};
   std::shared_ptr<pl::mod::ModContext> cppContext{};
+  std::shared_ptr<pl::mod::NativeMod> cppNativeMod{};
 };
 
 std::unordered_map<std::string, LoadedModEntry> gLoadedModLibraries;
@@ -348,11 +349,13 @@ pl::mod::ModRegistration *ResolveCppModRegistration(void *handle) {
 
 bool RunCppLifecycle(pl::mod::ModRegistration &registration,
                      pl::mod::ModContext &context,
+                     pl::mod::NativeMod *nativeMod,
                      pl::mod::LifecycleFunction lifecycle,
                      const char *phase) {
   if (!lifecycle) {
     return true;
   }
+  pl::mod::detail::ScopedCurrentMod guard(nativeMod);
   try {
     return lifecycle(registration.instance, context);
   } catch (const std::exception &ex) {
@@ -478,9 +481,13 @@ bool ModManager::LoadModLibrary(
     entry.cppRegistration = cppRegistration;
     entry.cppContext =
         std::make_shared<pl::mod::ModContext>(vm, ToCppModInfo(modInfoStorage));
+    entry.cppNativeMod = std::make_shared<pl::mod::NativeMod>(
+        vm, ToCppModInfo(modInfoStorage));
+    entry.cppNativeMod->setState(pl::mod::NativeMod::State::Loaded);
 
     const bool loaded = RunCppLifecycle(*entry.cppRegistration,
                                         *entry.cppContext,
+                                        entry.cppNativeMod.get(),
                                         entry.cppRegistration->load,
                                         "loading");
     if (!loaded) {
@@ -523,19 +530,22 @@ void ModManager::EnableLoadedMods() {
     }
 
     if (entry->kind == LoadedModKind::CppLifecycle) {
-      if (!entry->cppRegistration || !entry->cppContext) {
+      if (!entry->cppRegistration || !entry->cppContext ||
+          !entry->cppNativeMod) {
         logger.error("C++ lifecycle mod {} is missing registration state",
                      entry->modId);
         continue;
       }
       const bool enabled = RunCppLifecycle(*entry->cppRegistration,
                                            *entry->cppContext,
+                                           entry->cppNativeMod.get(),
                                            entry->cppRegistration->enable,
                                            "enabling");
       if (!enabled) {
         logger.error("Failed to enable C++ lifecycle mod {}", entry->modId);
         continue;
       }
+      entry->cppNativeMod->setState(pl::mod::NativeMod::State::Enabled);
       SetLoadedModState(key, LoadedModState::Enabled);
       continue;
     }
@@ -571,18 +581,22 @@ void ModManager::DisableAndUnloadLoadedMods() {
     if (entry->state == LoadedModState::Enabled) {
       bool disabled = true;
       if (entry->kind == LoadedModKind::CppLifecycle) {
-        if (!entry->cppRegistration || !entry->cppContext) {
+        if (!entry->cppRegistration || !entry->cppContext ||
+            !entry->cppNativeMod) {
           disabled = false;
           logger.error("C++ lifecycle mod {} is missing registration state",
                        entry->modId);
         } else {
           disabled = RunCppLifecycle(*entry->cppRegistration,
                                      *entry->cppContext,
+                                     entry->cppNativeMod.get(),
                                      entry->cppRegistration->disable,
                                      "disabling");
           if (!disabled) {
             logger.error("Failed to disable C++ lifecycle mod {}",
                          entry->modId);
+          } else {
+            entry->cppNativeMod->setState(pl::mod::NativeMod::State::Loaded);
           }
         }
       } else if (entry->disable) {
@@ -605,19 +619,22 @@ void ModManager::DisableAndUnloadLoadedMods() {
     }
 
     if (entry->kind == LoadedModKind::CppLifecycle) {
-      if (!entry->cppRegistration || !entry->cppContext) {
+      if (!entry->cppRegistration || !entry->cppContext ||
+          !entry->cppNativeMod) {
         logger.error("C++ lifecycle mod {} is missing registration state",
                      entry->modId);
         continue;
       }
       const bool unloaded = RunCppLifecycle(*entry->cppRegistration,
                                             *entry->cppContext,
+                                            entry->cppNativeMod.get(),
                                             entry->cppRegistration->unload,
                                             "unloading");
       if (!unloaded) {
         logger.error("Failed to unload C++ lifecycle mod {}", entry->modId);
         continue;
       }
+      entry->cppNativeMod->setState(pl::mod::NativeMod::State::Unloaded);
     } else if (entry->unload) {
       if (!entry->unload()) {
         logger.error("Failed to unload lifecycle mod {}", entry->modId);
