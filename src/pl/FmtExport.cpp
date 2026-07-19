@@ -1,6 +1,7 @@
 #include <fmt/format.h>
 
 #include <string>
+#include <string_view>
 
 /**
  * @file FmtExport.cpp
@@ -20,9 +21,16 @@
 
 namespace {
 
+// Select the exact overload of fmt::v11::vformat that native mods import:
+//   std::string vformat(string_view, format_args)
+// fmt also declares a template overload vformat(const Locale&, ...), so
+// &fmt::v11::vformat is ambiguous without a static_cast to pin the type.
+using VformatSig = std::string (*)(fmt::v11::string_view,
+                                   fmt::v11::format_args);
+
 // volatile defeats the compiler's dead-code elimination: it cannot prove
 // the pointer is never dereferenced, so it must emit the reference.
-[[maybe_unused]] volatile auto g_fmtVformatAddr =
-    reinterpret_cast<void *>(&fmt::v11::vformat);
+[[maybe_unused]] volatile VformatSig g_fmtVformatAddr =
+    static_cast<VformatSig>(&fmt::v11::vformat);
 
 } // namespace
