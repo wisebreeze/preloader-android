@@ -29,7 +29,10 @@ namespace {
 // checks (CrashReporter :crash guard, etc.) are unaffected. Process model,
 // applicationId, package name, permissions and Firebase identity are all
 // untouched.
+bool g_compatModeEnabled = true;
+
 void fakeLauncherIdentityIfNeeded() {
+  if (!g_compatModeEnabled) return;
   char current[256] = {0};
   int fd = open("/proc/self/cmdline", O_RDONLY | O_CLOEXEC);
   if (fd < 0) return;
@@ -102,9 +105,20 @@ extern "C" {
 
 JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
   (void)reserved;
-  fakeLauncherIdentityIfNeeded();
   pl::runtime::SetJavaVm(vm);
   return JNI_VERSION_1_4;
+}
+
+JNIEXPORT void JNICALL
+Java_org_levimc_launcher_core_mods_ModManager_nativeSetCompatMode(
+    JNIEnv *env, jclass clazz, jboolean enabled) {
+  (void)env;
+  (void)clazz;
+  g_compatModeEnabled = enabled == JNI_TRUE;
+  // Apply the identity rewrite immediately so it is in place before any
+  // external mod is dlopen-ed via nativeLoadMod. Called right after
+  // System.loadLibrary("preloader") from the app-side ModManager.
+  fakeLauncherIdentityIfNeeded();
 }
 
 JNIEXPORT jboolean JNICALL
