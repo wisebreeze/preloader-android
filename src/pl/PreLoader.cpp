@@ -1,7 +1,12 @@
 #include <jni.h>
 
+#include <cstring>
+#include <dlfcn.h>
 #include <filesystem>
+#include <fcntl.h>
 #include <optional>
+#include <unistd.h>
+#include <sys/prctl.h>
 
 #include "pl/Logger.hpp"
 #include "pl/internal/ModManager.h"
@@ -10,6 +15,52 @@
 #include "pl/runtime/ModMenuBridge.h"
 
 namespace {
+
+// Some external mods (e.g. BedrockTools) gate their installation on the
+// launcher process name read from /proc/self/cmdline, only accepting
+// org.levimc.launcher / org.levimc.launcher:minecraft / com.mojang.minecraftpe.
+// When BreezeLauncher ships under a different applicationId (e.g. the
+// com.wisebreeze.launcher disguise build), those mods silently no-op.
+// To keep them working without touching mod code, rewrite argv[0] (which
+// backs /proc/self/cmdline) to org.levimc.launcher at preloader load time.
+//
+// This only affects /proc/self/cmdline. Application.getProcessName() reads
+// the ActivityThread binder cache, not this file, so Java-side process name
+// checks (CrashReporter :crash guard, etc.) are unaffected. Process model,
+// applicationId, package name, permissions and Firebase identity are all
+// untouched.
+void fakeLauncherIdentityIfNeeded() {
+  char current[256] = {0};
+  int fd = open("/proc/self/cmdline", O_RDONLY | O_CLOEXEC);
+  if (fd < 0) return;
+  ssize_t n = read(fd, current, sizeof(current) - 1);
+  close(fd);
+  if (n <= 0) return;
+
+  // Already presenting as org.levimc.launcher* — nothing to do (default build).
+  if (std::strncmp(current, "org.levimc.launcher", 19) == 0) return;
+
+  // bionic libc exports __progname, which points directly at the argv[0]
+  // buffer (no copy). Overwriting that buffer rewrites /proc/self/cmdline.
+  char **prognameVar = static_cast<char **>(dlsym(RTLD_DEFAULT, "__progname"));
+  if (!prognameVar || !*prognameVar) return;
+
+  char *argv0 = *prognameVar;
+  size_t currentLen = std::strlen(argv0);
+  const char *fake = "org.levimc.launcher";
+  size_t fakeLen = std::strlen(fake);
+  // argv[0] buffer is sized for the current process name; only overwrite when
+  // the fake name fits (e.g. com.wisebreeze.launcher[23] -> org.levimc.launcher[19]).
+  if (fakeLen >= currentLen) return;
+
+  std::memset(argv0, 0, currentLen);
+  std::strncpy(argv0, fake, fakeLen);
+
+  // Keep /proc/self/comm (15-char limit) consistent too.
+  char comm[16] = {0};
+  std::strncpy(comm, fake, 15);
+  prctl(PR_SET_NAME, comm);
+}
 
 jboolean LoadModFromJava(JNIEnv *env, jstring libPath, jstring modRootPath) {
   JavaVM *vm = pl::runtime::GetJavaVm();
@@ -51,6 +102,7 @@ extern "C" {
 
 JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
   (void)reserved;
+  fakeLauncherIdentityIfNeeded();
   pl::runtime::SetJavaVm(vm);
   return JNI_VERSION_1_4;
 }
