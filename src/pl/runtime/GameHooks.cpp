@@ -11,6 +11,7 @@
 #include "pl/Logger.hpp"
 #include "pl/memory/Hook.hpp"
 #include "pl/memory/Signature.hpp"
+#include "pl/memory/Vtable.hpp"
 #include "pl/runtime/GameHookRules.h"
 
 namespace pl::runtime {
@@ -33,6 +34,7 @@ void hook_PauseMenuDtor(void *_this) {
 void (*orig_PauseMenuOpen)(void *) = nullptr;
 void hook_PauseMenuOpen(void *_this) {
   g_isPauseMenuOpen.store(true, std::memory_order_relaxed);
+  g_isShowingMenu.store(true, std::memory_order_relaxed);
   if (orig_PauseMenuOpen) {
     orig_PauseMenuOpen(_this);
   }
@@ -41,6 +43,8 @@ void hook_PauseMenuOpen(void *_this) {
 void (*orig_HudScreenDtor)(void *) = nullptr;
 void hook_HudScreenDtor(void *_this) {
   g_isHudScreenOpen.store(false, std::memory_order_relaxed);
+  g_isPauseMenuOpen.store(false, std::memory_order_relaxed);
+  g_isShowingMenu.store(false, std::memory_order_relaxed);
   if (orig_HudScreenDtor) {
     orig_HudScreenDtor(_this);
   }
@@ -49,6 +53,8 @@ void hook_HudScreenDtor(void *_this) {
 void (*orig_HudScreenOpen)(void *) = nullptr;
 void hook_HudScreenOpen(void *_this) {
   g_isHudScreenOpen.store(true, std::memory_order_relaxed);
+  g_isPauseMenuOpen.store(false, std::memory_order_relaxed);
+  g_isShowingMenu.store(false, std::memory_order_relaxed);
   if (orig_HudScreenOpen) {
     orig_HudScreenOpen(_this);
   }
@@ -102,10 +108,12 @@ void InitGameHooks() {
       return;
     }
 
-    const std::vector<std::string> requestedSignatures{
+    std::vector<std::string> requestedSignatures{
         signatures->pauseMenuDtor, signatures->pauseMenuOpen,
-        signatures->hudScreenDtor, signatures->hudScreenOpen,
-        signatures->isShowingMenu};
+        signatures->hudScreenDtor, signatures->hudScreenOpen};
+    if (!signatures->isShowingMenu.empty()) {
+      requestedSignatures.push_back(signatures->isShowingMenu);
+    }
     auto results = pl::memory::resolveSignatures(
         requestedSignatures, "libminecraftpe.so");
 
@@ -113,8 +121,14 @@ void InitGameHooks() {
     uintptr_t pauseOpen = ResolveResult(results, signatures->pauseMenuOpen);
     uintptr_t hudDtor = ResolveResult(results, signatures->hudScreenDtor);
     uintptr_t hudOpen = ResolveResult(results, signatures->hudScreenOpen);
-    uintptr_t isShowingMenuAddr =
-        ResolveResult(results, signatures->isShowingMenu);
+    uintptr_t isShowingMenuAddr = 0;
+    if (signatures->isShowingMenuVtableIndex) {
+      isShowingMenuAddr = pl::memory::resolveVtableFunction(
+          "14ClientInstance", *signatures->isShowingMenuVtableIndex,
+          "libminecraftpe.so");
+    } else if (!signatures->isShowingMenu.empty()) {
+      isShowingMenuAddr = ResolveResult(results, signatures->isShowingMenu);
+    }
 
     bool hooksReady = true;
     hooksReady &= InstallHook(pauseDtor,
