@@ -10,6 +10,7 @@
 #include <mutex>
 #include <span>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -409,6 +410,63 @@ namespace pl::runtime {
                         return false;
                     }
                 }
+            }
+            return true;
+        }
+
+        bool ValidateConfigSchemaJson(std::string_view moduleId,
+                                      std::string_view schemaJson) {
+            if (schemaJson.empty() || schemaJson.size() > kMaxConfigStringLength * 4) {
+                preloaderLogger.error("Rejected Mod Menu V2 schema for {}: invalid size {}",
+                                      moduleId, schemaJson.size());
+                return false;
+            }
+            try {
+                auto parsed = nlohmann::json::parse(schemaJson);
+                if (!parsed.is_object()) {
+                    preloaderLogger.error("Rejected Mod Menu V2 schema for {}: not an object",
+                                          moduleId);
+                    return false;
+                }
+                const auto &categories = parsed.value("categories", nlohmann::json::array());
+                if (!categories.is_array()) {
+                    preloaderLogger.error("Rejected Mod Menu V2 schema for {}: categories is not an array",
+                                          moduleId);
+                    return false;
+                }
+                const auto &nodes = parsed.value("nodes", nlohmann::json::array());
+                if (!nodes.is_array()) {
+                    preloaderLogger.error("Rejected Mod Menu V2 schema for {}: nodes is not an array",
+                                          moduleId);
+                    return false;
+                }
+                std::unordered_set<std::string> seenIds;
+                for (const auto &node : nodes) {
+                    if (!node.is_object()) continue;
+                    std::string id = node.value("id", "");
+                    std::string type = node.value("type", "info");
+                    std::string key = node.value("key", "");
+                    if (id.empty()) {
+                        preloaderLogger.error("Rejected Mod Menu V2 schema for {}: node without id",
+                                              moduleId);
+                        return false;
+                    }
+                    if (seenIds.count(id) > 0) {
+                        preloaderLogger.error("Rejected Mod Menu V2 schema for {}: duplicate node id {}",
+                                              moduleId, id);
+                        return false;
+                    }
+                    seenIds.insert(id);
+                    if (type != "section" && type != "info" && type != "toggle_group" && key.empty()) {
+                        preloaderLogger.error("Rejected Mod Menu V2 schema for {}: node {} without key",
+                                              moduleId, id);
+                        return false;
+                    }
+                }
+            } catch (const std::exception &e) {
+                preloaderLogger.error("Rejected Mod Menu V2 schema for {}: JSON parse error: {}",
+                                      moduleId, e.what());
+                return false;
             }
             return true;
         }
@@ -830,6 +888,8 @@ namespace pl::runtime {
             item.mod_id = source.mod_id;
             item.enabled = source.enabled;
             item.hide_in_hud_editor = source.hide_in_hud_editor;
+            item.config_schema_json = source.config_schema_json;
+            item.config_schema_revision = source.config_schema_revision;
             item.configs = source.configs;
             out.push_back(std::move(item));
         }
@@ -885,6 +945,81 @@ namespace pl::runtime {
         }
         if (callback)
             callback(module_id, key, safeValue);
+    }
+
+    bool SetRegisteredModuleConfigSchema(std::string_view moduleIdView,
+                                         std::string_view schemaJson) {
+        std::string moduleId;
+        if (!ReadRequiredString(moduleIdView, kMaxModuleIdLength, "module_id",
+                                moduleId)) {
+            return false;
+        }
+        if (!ValidateConfigSchemaJson(moduleId, schemaJson)) {
+            preloaderLogger.error("Rejected Mod Menu V2 schema for {}: validation failed; retaining existing configuration",
+                                  moduleId);
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(g_modMenuMutex);
+        for (auto &mod : g_registeredModules) {
+            if (mod.module_id != moduleId) continue;
+            if (mod.config_schema_json == schemaJson) return true;
+            const bool firstSchema = mod.config_schema_revision == 0;
+            mod.config_schema_json.assign(schemaJson);
+            ++mod.config_schema_revision;
+            if (mod.config_schema_revision == 0) mod.config_schema_revision = 1;
+            if (firstSchema) {
+                preloaderLogger.info("Registered Mod Menu V2 schema for {}: revision {}",
+                                     moduleId, mod.config_schema_revision);
+            }
+            return true;
+        }
+        preloaderLogger.error("Rejected Mod Menu V2 schema for {}: module is not registered", moduleId);
+        return false;
+    }
+
+    void ClearRegisteredModuleConfigSchema(std::string_view moduleIdView) {
+        std::string moduleId;
+        if (!ReadRequiredString(moduleIdView, kMaxModuleIdLength, "module_id",
+                                moduleId)) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(g_modMenuMutex);
+        for (auto &mod : g_registeredModules) {
+            if (mod.module_id != moduleId) continue;
+            mod.config_schema_json.clear();
+            mod.config_schema_revision = 0;
+            return;
+        }
+    }
+
+    bool GetRegisteredModuleConfigSchema(std::string_view moduleIdView,
+                                         std::string &out) {
+        std::string moduleId;
+        if (!ReadRequiredString(moduleIdView, kMaxModuleIdLength, "module_id",
+                                moduleId)) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(g_modMenuMutex);
+        for (const auto &mod : g_registeredModules) {
+            if (mod.module_id != moduleId) continue;
+            out = mod.config_schema_json;
+            return true;
+        }
+        return false;
+    }
+
+    std::uint64_t GetRegisteredModuleConfigSchemaRevision(std::string_view moduleIdView) {
+        std::string moduleId;
+        if (!ReadRequiredString(moduleIdView, kMaxModuleIdLength, "module_id",
+                                moduleId)) {
+            return 0;
+        }
+        std::lock_guard<std::mutex> lock(g_modMenuMutex);
+        for (const auto &mod : g_registeredModules) {
+            if (mod.module_id != moduleId) continue;
+            return mod.config_schema_revision;
+        }
+        return 0;
     }
 
     void UnregisterModulesForModId(const std::string &modId) {
@@ -1194,6 +1329,14 @@ namespace pl::modmenu {
 
     HudSurfaceSize getHudSurfaceSize() {
         return pl::runtime::GetHudSurfaceSize();
+    }
+
+    bool setConfigSchemaJson(std::string_view moduleId, std::string_view schemaJson) {
+        return pl::runtime::SetRegisteredModuleConfigSchema(moduleId, schemaJson);
+    }
+
+    void clearConfigSchema(std::string_view moduleId) {
+        pl::runtime::ClearRegisteredModuleConfigSchema(moduleId);
     }
 
     bool registerFont(std::string_view fontId,
