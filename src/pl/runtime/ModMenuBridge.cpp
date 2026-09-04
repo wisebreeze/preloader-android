@@ -16,6 +16,8 @@
 
 #include <lunasvg.h>
 
+#include <nlohmann/json.hpp>
+
 #include "pl/Logger.hpp"
 #include "pl/ModMenu.hpp"
 #include "pl/Input.hpp"
