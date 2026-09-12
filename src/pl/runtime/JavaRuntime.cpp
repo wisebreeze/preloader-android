@@ -124,6 +124,60 @@ bool CallActivityStringMethod(const char *methodName, const std::string &value) 
   return called;
 }
 
+bool SetClipboardTextImpl(std::string_view text) {
+  if (!g_vm || !g_activity) return false;
+
+  bool attached = false;
+  JNIEnv *env = AttachCurrentThread(attached);
+  if (!env) return false;
+
+  bool success = false;
+  jclass activityClass = env->GetObjectClass(g_activity);
+  jstring serviceName = env->NewStringUTF("clipboard");
+  jobject manager = nullptr;
+  if (activityClass && serviceName) {
+    jmethodID getSystemService = env->GetMethodID(
+        activityClass, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
+    if (getSystemService) manager = env->CallObjectMethod(g_activity, getSystemService, serviceName);
+  }
+
+  jclass clipDataClass = env->FindClass("android/content/ClipData");
+  jclass clipboardClass = env->FindClass("android/content/ClipboardManager");
+  jstring label = env->NewStringUTF("");
+  std::string value(text);
+  jstring content = env->NewStringUTF(value.c_str());
+  jobject clip = nullptr;
+  if (clipDataClass && clipboardClass && content) {
+    jmethodID newPlainText = env->GetStaticMethodID(
+        clipDataClass, "newPlainText",
+        "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Landroid/content/ClipData;");
+    if (newPlainText) clip = env->CallStaticObjectMethod(clipDataClass, newPlainText, label, content);
+  }
+
+  if (manager && clip && clipboardClass) {
+    jmethodID setPrimaryClip = env->GetMethodID(clipboardClass, "setPrimaryClip", "(Landroid/content/ClipData;)V");
+    if (setPrimaryClip) {
+      env->CallVoidMethod(manager, setPrimaryClip, clip);
+      success = true;
+    }
+  }
+
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    success = false;
+  }
+  if (clip) env->DeleteLocalRef(clip);
+  if (content) env->DeleteLocalRef(content);
+  if (label) env->DeleteLocalRef(label);
+  if (clipboardClass) env->DeleteLocalRef(clipboardClass);
+  if (clipDataClass) env->DeleteLocalRef(clipDataClass);
+  if (manager) env->DeleteLocalRef(manager);
+  if (serviceName) env->DeleteLocalRef(serviceName);
+  if (activityClass) env->DeleteLocalRef(activityClass);
+  if (attached) g_vm->DetachCurrentThread();
+  return success;
+}
+
 pl::platform::HttpResponse HttpGetImpl(std::string_view url, int timeoutMs) {
   pl::platform::HttpResponse result;
   if (!g_vm || url.empty()) {
@@ -264,6 +318,10 @@ pl::platform::HttpResponse HttpGetImpl(std::string_view url, int timeoutMs) {
 } // namespace pl::runtime
 
 namespace pl::platform {
+
+bool setClipboardText(std::string_view text) {
+  return pl::runtime::SetClipboardTextImpl(text);
+}
 
 HttpResponse httpGet(std::string_view url, int timeoutMs) {
   return pl::runtime::HttpGetImpl(url, timeoutMs);
