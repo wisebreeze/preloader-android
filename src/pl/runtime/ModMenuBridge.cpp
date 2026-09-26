@@ -31,6 +31,13 @@ namespace pl::runtime {
         constexpr size_t kMaxModIdLength = 160;
         constexpr size_t kMaxButtonLabelLength = 32;
         constexpr size_t kMaxConfigStringLength = 2048;
+        // A config schema is the full JSON document (categories + nodes +
+        // options) for one module, not a single config value. Using
+        // kMaxConfigStringLength * 4 (8 KiB) as the schema cap rejected
+        // legitimate mods whose schema exceeds 8 KiB (e.g. BlockPlacementAnimation
+        // at ~14 KiB). 64 KiB comfortably fits any realistic schema while still
+        // guarding against pathological inputs.
+        constexpr size_t kMaxConfigSchemaSize = 64 * 1024;
         constexpr size_t kMaxDrawTextLength = 4096;
         constexpr int kMaxConfigCount = 128;
         constexpr int kMaxDrawCommandCount = 4096;
@@ -418,7 +425,7 @@ namespace pl::runtime {
 
         bool ValidateConfigSchemaJson(std::string_view moduleId,
                                       std::string_view schemaJson) {
-            if (schemaJson.empty() || schemaJson.size() > kMaxConfigStringLength * 4) {
+            if (schemaJson.empty() || schemaJson.size() > kMaxConfigSchemaSize) {
                 preloaderLogger.error("Rejected Mod Menu V2 schema for {}: invalid size {}",
                                       moduleId, schemaJson.size());
                 return false;
