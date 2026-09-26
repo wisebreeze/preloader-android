@@ -456,20 +456,31 @@ namespace pl::runtime {
                     std::string type = node.value("type", "info");
                     std::string key = node.value("key", "");
                     if (id.empty()) {
-                        preloaderLogger.error("Rejected Mod Menu V2 schema for {}: node without id",
-                                              moduleId);
-                        return false;
+                        // Auto-generate an id so the node is still rendered.
+                        id = "node_" + std::to_string(seenIds.size());
+                        preloaderLogger.warn(
+                                "Mod Menu V2 schema for {}: node without id; assigned {}",
+                                moduleId, id);
                     }
+                    // De-duplicate ids by appending a suffix.
                     if (seenIds.count(id) > 0) {
-                        preloaderLogger.error("Rejected Mod Menu V2 schema for {}: duplicate node id {}",
-                                              moduleId, id);
-                        return false;
+                        std::string base = id;
+                        size_t suffix = 2;
+                        do {
+                            id = base + "_" + std::to_string(suffix++);
+                        } while (seenIds.count(id) > 0);
+                        preloaderLogger.warn(
+                                "Mod Menu V2 schema for {}: duplicate node id; renamed to {}",
+                                moduleId, id);
                     }
                     seenIds.insert(id);
                     if (type != "section" && type != "info" && type != "toggle_group" && key.empty()) {
-                        preloaderLogger.error("Rejected Mod Menu V2 schema for {}: node {} without key",
-                                              moduleId, id);
-                        return false;
+                        // Fall back to the (now unique) id as the config key so
+                        // the node is still usable instead of dropping the
+                        // whole schema.
+                        preloaderLogger.warn(
+                                "Mod Menu V2 schema for {}: node {} without key; using id as key",
+                                moduleId, id);
                     }
                 }
             } catch (const std::exception &e) {
@@ -500,19 +511,28 @@ namespace pl::runtime {
                 if (modId.empty()) {
                     modId = ownerModId;
                 } else if (modId != ownerModId) {
-                    preloaderLogger.error(
-                            "Rejected Mod Menu module {}: declared mod_id {} does not match "
-                            "owning lifecycle mod {}",
+                    // Be lenient: overwrite the declared mod_id with the actual
+                    // owning lifecycle mod id instead of rejecting the whole
+                    // module. mod_id is only used for ownership tracking; the
+                    // module_id (ModMenu unique key) is unaffected. Large mods
+                    // with hard-coded mod_id values should not be blocked just
+                    // because the install directory name differs.
+                    preloaderLogger.warn(
+                            "Mod Menu module {}: declared mod_id {} does not match "
+                            "owning lifecycle mod {}; overriding with owner",
                             moduleId, modId, ownerModId);
-                    return false;
+                    modId = ownerModId;
                 }
             }
 
             if (info.configs.size() > kMaxConfigCount) {
-                preloaderLogger.error("Rejected Mod Menu module {}: invalid config_count "
-                                      "{}",
-                                      moduleId, info.configs.size());
-                return false;
+                // Truncate instead of rejecting. A mod with more configs than
+                // the cap would otherwise disappear entirely from the menu.
+                preloaderLogger.warn(
+                        "Mod Menu module {}: config_count {} exceeds cap {}; "
+                        "truncating",
+                        moduleId, info.configs.size(),
+                        static_cast<size_t>(kMaxConfigCount));
             }
 
             RegisteredModule entry;
@@ -527,13 +547,14 @@ namespace pl::runtime {
             entry.on_keybind = info.onKeybind;
             entry.configs.reserve(info.configs.size());
 
-            for (size_t i = 0; i < info.configs.size(); ++i) {
+            for (size_t i = 0; i < info.configs.size() && i < static_cast<size_t>(kMaxConfigCount); ++i) {
                 const auto &src = info.configs[i];
                 if (!IsValidConfigType(src.type)) {
-                    preloaderLogger.error("Rejected Mod Menu module {}: config {} has "
-                                          "invalid type {}",
-                                          entry.module_id, i, static_cast<int>(src.type));
-                    return false;
+                    // Skip the bad config instead of rejecting the whole module.
+                    preloaderLogger.warn(
+                            "Mod Menu module {}: config {} has invalid type {}; skipping",
+                            entry.module_id, i, static_cast<int>(src.type));
+                    continue;
                 }
 
                 RegisteredModule::ConfigEntry cfg;
@@ -549,9 +570,11 @@ namespace pl::runtime {
                                         "config max_value", cfg.max_value) ||
                     !ReadOptionalString(src.dependsOn, kMaxConfigStringLength,
                                         "config depends_on", cfg.depends_on)) {
-                    preloaderLogger.error("Rejected Mod Menu module {}: invalid config {}",
-                                          entry.module_id, i);
-                    return false;
+                    // Skip the malformed config, keep the rest.
+                    preloaderLogger.warn(
+                            "Mod Menu module {}: config {} has invalid fields; skipping",
+                            entry.module_id, i);
+                    continue;
                 }
                 cfg.type = src.type;
                 cfg.current_value = cfg.default_value;
