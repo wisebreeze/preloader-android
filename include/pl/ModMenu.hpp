@@ -247,6 +247,8 @@ namespace pl::modmenu {
  */
     PL_EXPORT void unregisterButton(std::string_view buttonId);
 
+    PL_EXPORT bool setFloatingMenuButtonVisible(bool visible);
+
 /**
  * @brief Fluent helper for building and registering ModuleInfo.
  */
