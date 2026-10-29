@@ -47,29 +47,47 @@ target_compile_options(preloader PRIVATE
         $<$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>:-fvisibility=hidden -fvisibility-inlines-hidden>)
 
 include(FetchContent)
+
+# Mirror fallback: prefer gitee so CMake configure works without VPN.
+# Each entry tries gitee first, then github as a backup via GIT_REPOSITORY
+# override through an env var (PRELOADER_USE_GITHUB=1 forces github).
+if(DEFINED ENV{PRELOADER_USE_GITHUB} AND "$ENV{PRELOADER_USE_GITHUB}" STREQUAL "1")
+    set(_PL_JSON_REPO    "https://github.com/nlohmann/json.git")
+    set(_PL_PFR_REPO     "https://github.com/boostorg/pfr.git")
+    set(_PL_MAGIC_REPO   "https://github.com/Neargye/magic_enum.git")
+    set(_PL_FMT_REPO     "https://github.com/fmtlib/fmt.git")
+    set(_PL_LUNASVG_REPO "https://github.com/sammycage/lunasvg.git")
+else()
+    set(_PL_JSON_REPO    "https://gitee.com/mirrors/nlohmann_json.git")
+    set(_PL_PFR_REPO     "https://gitee.com/mirrors/pfr.git")
+    set(_PL_MAGIC_REPO   "https://gitee.com/mirrors/magic_enum.git")
+    set(_PL_FMT_REPO     "https://gitee.com/mirrors/fmt.git")
+    set(_PL_LUNASVG_REPO "https://gitee.com/mirrors/lunasvg.git")
+endif()
+
 FetchContent_Declare(
         nlohmann_json
-        GIT_REPOSITORY https://github.com/nlohmann/json.git
+        GIT_REPOSITORY ${_PL_JSON_REPO}
         GIT_TAG v3.11.3
 )
 FetchContent_Declare(
         boost_pfr
-        GIT_REPOSITORY https://github.com/boostorg/pfr.git
+        GIT_REPOSITORY ${_PL_PFR_REPO}
         GIT_TAG boost-1.88.0
 )
 FetchContent_Declare(
         magic_enum
-        GIT_REPOSITORY https://github.com/Neargye/magic_enum.git
+        GIT_REPOSITORY ${_PL_MAGIC_REPO}
         GIT_TAG v0.9.7
 )
 FetchContent_Declare(
         fmt
-        GIT_REPOSITORY https://github.com/fmtlib/fmt.git
+        GIT_REPOSITORY ${_PL_FMT_REPO}
         GIT_TAG 11.2.0
 )
 FetchContent_Declare(
         lunasvg
-        GIT_REPOSITORY https://github.com/sammycage/lunasvg.git
+        GIT_REPOSITORY ${_PL_LUNASVG_REPO}
         GIT_TAG v3.5.0
         EXCLUDE_FROM_ALL
 )
